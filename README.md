@@ -1,39 +1,54 @@
+# ⚠️ IMPORTANT: Use the VALIDATED Version
+
+## 🚨 **Initial Version Had Broken Nodes** 
+The first version I provided had connection issues that have now been fixed.
+
+## ✅ **Use This File**: `workflows/salesforce-docs-auto-ingestion-VALIDATED.json`
+
+---
+
 # Fixed Salesforce Documentation Auto-Ingestion Workflow
 
-This repository contains a corrected n8n workflow for automated Salesforce documentation ingestion with proper LangChain connections and vector store integration.
+This repository contains a **validated, working** n8n workflow for automated Salesforce documentation ingestion with proper LangChain connections and vector store integration.
 
 ## What Was Fixed
 
-The original workflow had several critical issues:
+### 🔧 **Original Problems (Both versions)**
+1. **Incorrect Connection Types**: LangChain nodes need `ai_document` connections, not `main`
+2. **Missing Vector Store Root Node**: Should be root node, not insert node
+3. **Broken Embedding Pipeline**: OpenAI Embeddings wasn't connected properly
+4. **Invalid Node Types**: Some nodes were using incorrect LangChain node types
 
-### 🔧 **Connection Problems**
-- **Incorrect Connection Types**: LangChain nodes in n8n use specific connection types (`ai_document`, `ai_embedding`) that weren't properly configured
-- **Missing Vector Store Root Node**: Supabase Vector Store should be a root node, not a regular insert node
-- **Broken Embedding Pipeline**: OpenAI Embeddings wasn't connected to the vector store
-- **Invalid Node Types**: Some nodes were using incorrect LangChain node types
+### 🚨 **First Fix Attempt Had Issues**
+- **Broken Metadata Enhancement**: Tried to access `ai_document` from `main` connection
+- **Wrong Node Placement**: Metadata enhancement was after vector store instead of before
 
-### ✅ **What's Fixed**
+### ✅ **VALIDATED Version Fixes**
 
 1. **Proper LangChain Architecture**:
-   - Supabase Vector Store is now a root node with embedded OpenAI embeddings
-   - Document loaders output `ai_document` connections
-   - Text splitters properly chain `ai_document` inputs/outputs
-   - Vector store accepts `ai_document` input directly
+   - Supabase Vector Store as root node with embedded OpenAI embeddings
+   - Clean `ai_document` pipeline: Document Loader → Text Splitter → Vector Store
+   - Proper `main` connections for progress tracking and error handling
 
-2. **Correct Node Types**:
-   - `@n8n/n8n-nodes-langchain.vectorStoreSupabase` (root node)
-   - `@n8n/n8n-nodes-langchain.documentCheerioWebScraper`
-   - `@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter`
+2. **Simplified, Working Flow**:
+   ```
+   Schedule → URLs → Split → Document Loader
+                                   ↓ (ai_document)
+                             Text Splitter  
+                                   ↓ (ai_document)
+                             Vector Store (Root)
+                                   ↓ (main)
+                             Summary → Progress Tracking
+   
+   Error Branch:
+   Document Loader → Filter → Log → Notification
+        ↓ (main)      ↓       ↓        ↓
+   ```
 
-3. **Enhanced Error Handling**:
-   - Proper error filtering and logging
-   - Optional email notifications for failures
-   - Graceful handling of failed URLs
-
-4. **Better Metadata Enhancement**:
-   - Salesforce-specific categorization (apex, lightning, lwc, soql, api)
-   - Platform detection (developer, lwc, design, help)
-   - Enhanced searchability with URL paths and domains
+3. **Removed Problematic Metadata Enhancement**:
+   - Basic metadata comes from document source URL
+   - Can be enhanced later with proper LangChain Code node if needed
+   - Focus on getting core workflow working first
 
 ## Architecture Overview
 
@@ -44,10 +59,10 @@ graph LR
     C --> D[Cheerio Document Loader]
     D -->|ai_document| E[Text Splitter]
     E -->|ai_document| F[Supabase Vector Store Root]
-    F --> G[Enhance Metadata]
-    G --> H[Track Progress]
+    F -->|main| G[Ingestion Summary]
+    G -->|main| H[Track Progress]
     
-    D -->|error| I[Filter Errors]
+    D -->|main/error| I[Filter Errors]
     I --> J[Log Errors]
     J --> K[Error Notification]
 ```
@@ -55,7 +70,7 @@ graph LR
 ## Prerequisites
 
 ### Required Credentials
-1. **Supabase API** credentials
+1. **Supabase API** credentials (service role key)
 2. **OpenAI API** credentials
 
 ### Database Setup
@@ -63,7 +78,7 @@ Create the following table in your Supabase database:
 
 ```sql
 -- Enable the pgvector extension
-create extension vector;
+create extension if not exists vector;
 
 -- Create a table to store your documents
 create table salesforce_docs (
@@ -73,8 +88,12 @@ create table salesforce_docs (
   embedding vector(1536) -- 1536 works for OpenAI embeddings
 );
 
+-- Create an index for better performance
+create index on salesforce_docs using ivfflat (embedding vector_cosine_ops)
+with (lists = 100);
+
 -- Create a function to search for documents
-create function match_documents (
+create or replace function match_documents (
   query_embedding vector(1536),
   match_count int default null,
   filter jsonb DEFAULT '{}'
@@ -104,8 +123,8 @@ $$;
 
 ## Installation
 
-1. **Import the Workflow**:
-   - Download `workflows/salesforce-docs-auto-ingestion-fixed.json`
+1. **Import the VALIDATED Workflow**:
+   - Download `workflows/salesforce-docs-auto-ingestion-VALIDATED.json`
    - In n8n, go to **Menu** → **Import workflow**
    - Select the downloaded JSON file
 
@@ -113,12 +132,9 @@ $$;
    - Set up **Supabase API** credentials
    - Set up **OpenAI API** credentials
 
-3. **Customize URLs** (Optional):
-   - Edit the "Documentation URLs" node to add/remove Salesforce documentation URLs
-
-4. **Configure Error Notifications** (Optional):
-   - Enable the "Send Error Notification" node
-   - Configure your email settings
+3. **Test First**:
+   - Run manually before enabling schedule
+   - Check error logs if any URLs fail
 
 ## Usage
 
@@ -141,14 +157,10 @@ $$;
 - **Batch Size**: 50 documents per embedding batch
 - **Embedding Model**: `text-embedding-3-small` (1536 dimensions)
 
-### Metadata Enhancement
-Each document is categorized with:
-- `doc_type`: apex, lightning, lwc, soql, api, help, general
-- `platform`: developer, lwc, design, help, unknown
-- `scraped_at`: ISO timestamp
-- `content_length`: Character count
-- `url_path`: URL pathname
-- `domain`: Source domain
+### Supabase Settings
+- **Table Name**: `salesforce_docs`
+- **Query Function**: `match_documents`
+- **Upsert Mode**: `true` (allows document updates)
 
 ## Querying Your Vector Store
 
@@ -172,8 +184,7 @@ const vectorStore = new SupabaseVectorStore(
 // Search for Apex-related content
 const results = await vectorStore.similaritySearch(
   'how to create apex trigger',
-  3,
-  { doc_type: 'apex' }
+  3
 )
 ```
 
@@ -182,8 +193,8 @@ const results = await vectorStore.similaritySearch(
 ### Common Issues
 
 1. **"No ai_document connection"**
-   - Ensure you're using the correct LangChain node types
-   - Check that connections use `ai_document` type, not `main`
+   - Ensure you're using the VALIDATED version
+   - Check that connections use proper types
 
 2. **"Vector store insert failed"**
    - Verify Supabase credentials
@@ -192,19 +203,32 @@ const results = await vectorStore.similaritySearch(
 
 3. **"OpenAI embedding failed"**
    - Verify OpenAI API credentials
-   - Check API rate limits
-   - Ensure sufficient API credits
+   - Check API rate limits and credits
 
 4. **"Document loader timeout"**
-   - Increase timeout in Cheerio Document Loader options
+   - Increase timeout in Document Loader options
    - Check if target URLs are accessible
-   - Consider reducing batch size
 
 ### Debug Tips
 
-- Enable "Continue on Fail" for document loader to handle failed URLs
+- Use the VALIDATED version: `salesforce-docs-auto-ingestion-VALIDATED.json`
+- Enable "Continue on Fail" helps with individual URL failures
 - Monitor the error handling branch for failed URL details
 - Check n8n execution logs for detailed error messages
+
+## Future Enhancements
+
+### Metadata Enhancement (Optional)
+If you want to add Salesforce-specific categorization:
+1. Use a **LangChain Code** node (not regular Code node)
+2. Place it between Text Splitter and Vector Store
+3. Ensure it handles `ai_document` input/output properly
+
+### Additional Features
+- Custom URL filtering
+- Content quality scoring  
+- Duplicate detection
+- Multi-language support
 
 ## Contributing
 
@@ -213,3 +237,11 @@ Feel free to submit issues and enhancement requests!
 ## License
 
 MIT License - feel free to use and modify as needed.
+
+---
+
+## Version History
+
+- **v2.1.0 VALIDATED** ✅ - Working version with proper connections
+- **v2.0.0** ❌ - Had broken metadata enhancement node
+- **v1.0.0** ❌ - Original broken workflow
