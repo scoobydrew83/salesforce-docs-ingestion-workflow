@@ -1,0 +1,364 @@
+{
+  "name": "Fixed Salesforce Docs Auto-Ingestion with Proper LangChain Connections",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule_trigger",
+      "name": "Daily Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "notes": "Triggers daily at midnight to scrape Salesforce documentation"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "urls_to_scrape",
+              "name": "urls",
+              "value": "[\n  \"https://developer.salesforce.com/docs/atlas.en-us.apexcode.meta/apexcode/\",\n  \"https://developer.salesforce.com/docs/atlas.en-us.lightning.meta/lightning/\",\n  \"https://developer.salesforce.com/docs/atlas.en-us.lightning.meta/lightning/intro_lwc.htm\",\n  \"https://developer.salesforce.com/docs/atlas.en-us.soql_sosl.meta/soql_sosl/\",\n  \"https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/\",\n  \"https://lwc.dev/guide/introduction\",\n  \"https://lwc.dev/guide/create-components\",\n  \"https://lightningdesignsystem.com/components/\",\n  \"https://help.salesforce.com/s/articleView?id=sf.overview_edition_lex_only.htm\"\n]",
+              "type": "json"
+            }
+          ]
+        }
+      },
+      "id": "url_list",
+      "name": "Documentation URLs",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [450, 300],
+      "notes": "Define key Salesforce documentation URLs to scrape"
+    },
+    {
+      "parameters": {
+        "fieldsToSplitOut": "urls",
+        "options": {}
+      },
+      "id": "split_urls",
+      "name": "Split URLs",
+      "type": "n8n-nodes-base.itemLists",
+      "typeVersion": 3.4,
+      "position": [650, 300],
+      "notes": "Split URL array into individual items for processing"
+    },
+    {
+      "parameters": {
+        "embeddings": {
+          "values": {
+            "model": "text-embedding-3-small",
+            "options": {
+              "dimensions": 1536,
+              "batchSize": 50
+            }
+          }
+        },
+        "vectorStore": {
+          "values": {
+            "tableName": "salesforce_docs",
+            "queryName": "match_documents",
+            "upsert": true
+          }
+        }
+      },
+      "id": "supabase_vector_store",
+      "name": "Supabase Vector Store (Root Node)",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1,
+      "position": [1200, 300],
+      "notes": "Root LangChain vector store node for Supabase with OpenAI embeddings",
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_credentials",
+          "name": "Supabase API"
+        },
+        "openAiApi": {
+          "id": "openai_credentials", 
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.urls }}",
+        "sourceType": "url",
+        "options": {
+          "selector": "main, .slds-container, .content, article, .documentation-content, body",
+          "timeout": 30000
+        }
+      },
+      "id": "cheerio_document_loader",
+      "name": "Cheerio Web Scraper Document Loader",
+      "type": "@n8n/n8n-nodes-langchain.documentCheerioWebScraper",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "notes": "LangChain document loader that properly extracts and structures web content",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "chunkSize": 1500,
+        "chunkOverlap": 200,
+        "options": {
+          "keepSeparator": true,
+          "lengthFunction": "tiktoken"
+        }
+      },
+      "id": "text_splitter",
+      "name": "Recursive Character Text Splitter", 
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [1050, 300],
+      "notes": "Split documents into optimal chunks for vector storage with proper overlap"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javascript",
+        "code": "// Process and enhance document metadata for better searchability\nconst documents = $input.all('ai_document');\nconst processedDocs = [];\n\nfor (const docData of documents) {\n  const document = docData.json;\n  const url = document.metadata?.source || '';\n  \n  // Extract Salesforce-specific metadata\n  const enhancedMetadata = {\n    ...document.metadata,\n    doc_type: url.includes('apex') ? 'apex' :\n             url.includes('lightning') ? 'lightning' :\n             url.includes('lwc') ? 'lwc' :\n             url.includes('soql') ? 'soql' :\n             url.includes('api') ? 'api' :\n             url.includes('help.salesforce') ? 'help' : 'general',\n    platform: url.includes('developer.salesforce.com') ? 'developer' :\n             url.includes('lwc.dev') ? 'lwc' :\n             url.includes('lightningdesignsystem.com') ? 'design' :\n             url.includes('help.salesforce.com') ? 'help' : 'unknown',\n    scraped_at: new Date().toISOString(),\n    content_length: document.pageContent?.length || 0,\n    url_path: new URL(url).pathname,\n    domain: new URL(url).hostname\n  };\n  \n  processedDocs.push({\n    json: {\n      ...document,\n      metadata: enhancedMetadata\n    }\n  });\n}\n\nreturn processedDocs;"
+      },
+      "id": "enhance_metadata",
+      "name": "Enhance Document Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 300],
+      "notes": "Add Salesforce-specific metadata and categorization for better retrieval"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "success_count",
+              "name": "processed_documents",
+              "value": "={{ $runIndex + 1 }}",
+              "type": "number"
+            },
+            {
+              "id": "timestamp",
+              "name": "last_processed",
+              "value": "={{ $now }}",
+              "type": "string"
+            },
+            {
+              "id": "total_chunks", 
+              "name": "total_chunks",
+              "value": "={{ $json.length }}",
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "id": "track_progress",
+      "name": "Track Processing Progress",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1600, 300],
+      "notes": "Track ingestion progress and statistics"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "id": "has_error",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ]
+        },
+        "combineConditions": "any"
+      },
+      "id": "error_filter",
+      "name": "Filter Errors",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [850, 500],
+      "notes": "Filter items that have processing errors"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "error_details",
+              "name": "error_message",
+              "value": "={{ $json.error?.message || 'Unknown error during document processing' }}",
+              "type": "string"
+            },
+            {
+              "id": "failed_url",
+              "name": "failed_url", 
+              "value": "={{ $json.urls || 'Unknown URL' }}",
+              "type": "string"
+            },
+            {
+              "id": "error_timestamp",
+              "name": "error_timestamp",
+              "value": "={{ $now }}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "handle_errors",
+      "name": "Log Processing Errors",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1050, 500],
+      "notes": "Log and handle document processing errors gracefully"
+    },
+    {
+      "parameters": {
+        "content": "Salesforce Documentation Ingestion Error\n\nURL: {{ $json.failed_url }}\nError: {{ $json.error_message }}\nTimestamp: {{ $json.error_timestamp }}\n\nPlease check the URL and retry if necessary.",
+        "subject": "Salesforce Docs Ingestion Error - {{ $json.failed_url }}",
+        "toEmail": "admin@yourcompany.com",
+        "options": {}
+      },
+      "id": "error_notification",
+      "name": "Send Error Notification",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1250, 500],
+      "notes": "Optional: Send email notification for processing errors",
+      "disabled": true
+    }
+  ],
+  "connections": {
+    "Daily Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Documentation URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Documentation URLs": {
+      "main": [
+        [
+          {
+            "node": "Split URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split URLs": {
+      "main": [
+        [
+          {
+            "node": "Cheerio Web Scraper Document Loader",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cheerio Web Scraper Document Loader": {
+      "ai_document": [
+        [
+          {
+            "node": "Recursive Character Text Splitter",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ],
+      "main": [
+        [
+          {
+            "node": "Filter Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recursive Character Text Splitter": {
+      "ai_document": [
+        [
+          {
+            "node": "Supabase Vector Store (Root Node)",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase Vector Store (Root Node)": {
+      "main": [
+        [
+          {
+            "node": "Enhance Document Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enhance Document Metadata": {
+      "main": [
+        [
+          {
+            "node": "Track Processing Progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Errors": {
+      "main": [
+        [
+          {
+            "node": "Log Processing Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Processing Errors": {
+      "main": [
+        [
+          {
+            "node": "Send Error Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "fixed-auto-ingestion-v2.0.0",
+  "meta": {
+    "instanceId": "salesforce-fixed-auto-ingestion",
+    "templateCredsSetupCompleted": true
+  },
+  "id": "FixedSalesforceAutoIngestionWorkflow",
+  "tags": ["salesforce", "documentation", "langchain", "fixed", "vector-store"]
+}
